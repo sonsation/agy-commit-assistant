@@ -467,6 +467,7 @@ fi
 STAGED_DIFF=$(git diff --cached 2>/dev/null)
 UNSTAGED_DIFF=$(git diff 2>/dev/null)
 STATUS=$(git status --porcelain 2>/dev/null)
+STAGED_STATUS=$(git diff --cached --name-status 2>/dev/null)
 
 # staged 파일이 있는지 확인
 if [ -z "$STAGED_DIFF" ]; then
@@ -516,11 +517,11 @@ BODY (after TWO blank lines):
 - IMPORTANT: TWO blank lines between each file
 - Use English language
 
-Git Status:
-$STATUS
+Git Status (Staged only):
+$STAGED_STATUS
 
 Changes Analysis:
-$(echo "$ANALYSIS_TEXT" | head -20)
+$(echo "$ANALYSIS_TEXT" | head -2000)
 
 EXACT FORMAT REQUIRED (copy this structure):
 
@@ -554,11 +555,11 @@ BODY (after TWO blank lines):
 - IMPORTANT: TWO blank lines between each file
 - Use Korean language
 
-Git Status:
-$STATUS
+Git Status (Staged only):
+$STAGED_STATUS
 
 Changes Analysis:
-$(echo "$ANALYSIS_TEXT" | head -20)
+$(echo "$ANALYSIS_TEXT" | head -2000)
 
 EXACT FORMAT REQUIRED (copy this structure):
 
@@ -633,9 +634,9 @@ if [ -z "$AI_MESSAGE" ]; then
             
             # 언어별 단순 프롬프트
             if [ "$LANGUAGE" = "en" ]; then
-                SIMPLE_PROMPT="Generate a detailed English commit message with title and body for: $(echo "$STATUS" | head -3 | tr '\n' ' ')"
+                SIMPLE_PROMPT="Generate a detailed English commit message with title and body for: $(echo "$STAGED_STATUS" | head -10 | tr '\n' ' ')"
             else
-                SIMPLE_PROMPT="Generate a detailed Korean commit message with title and body for: $(echo "$STATUS" | head -3 | tr '\n' ' ')"
+                SIMPLE_PROMPT="Generate a detailed Korean commit message with title and body for: $(echo "$STAGED_STATUS" | head -10 | tr '\n' ' ')"
             fi
             
             # 단순 접근법도 애니메이션과 함께
