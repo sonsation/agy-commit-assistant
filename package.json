@@ -26,9 +26,7 @@
   "engines": {
     "node": ">=16.0.0"
   },
-  "peerDependencies": {
-    "@google/gemini-cli": ">=0.1.0"
-  },
+  "peerDependencies": {},
   "files": [
     "bin/aic",
     "bin/postinstall.js",

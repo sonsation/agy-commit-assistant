@@ -61,9 +61,7 @@ msg() {
                 "usage_help") echo "Usage: aic [--all|-a] [--configure] [--setup|--unsetup] [--help|-h]" ;;
                 "not_git_repo") echo "❌ Not a Git repository." ;;
                 "staging_all") echo "📦 Staging all files..." ;;
-                "gemini_not_installed") echo "⚠️  Gemini CLI is not installed or not authenticated. Please follow these steps:
-   1. Install: npm install -g @google/gemini-cli
-   2. Authenticate: gemini (follow the authentication prompts)" ;;
+                "agy_not_installed") echo "⚠️  agy CLI is not installed. Please install Antigravity CLI first." ;;
                 "fallback_editor") echo "🔧 Using standard editor for commit message..." ;;
                 "editor_prompt") echo "Do you want to write a commit message in the text editor? (y/n): " ;;
                 "editor_cancelled") echo "🚫 Cancelled." ;;
@@ -145,9 +143,7 @@ msg() {
                 "usage_help") echo "사용법: aic [--all|-a] [--configure] [--setup|--unsetup] [--help|-h]" ;;
                 "not_git_repo") echo "❌ Git 저장소가 아닙니다." ;;
                 "staging_all") echo "📦 모든 파일을 staging합니다..." ;;
-                "gemini_not_installed") echo "⚠️  Gemini CLI가 설치되어 있지 않거나 인증이 완료되지 않았습니다. 다음 단계를 따라주세요:
-   1. 설치: npm install -g @google/gemini-cli
-   2. 인증: gemini (인증 과정을 따라 완료하세요)" ;;
+                "agy_not_installed") echo "⚠️  agy CLI가 설치되어 있지 않습니다. 먼저 Antigravity CLI를 설치해주세요." ;;
                 "fallback_editor") echo "🔧 일반 에디터로 커밋 메시지를 작성합니다..." ;;
                 "editor_prompt") echo "텍스트 에디터에서 커밋 메시지를 남기시겠습니까? (y/n): " ;;
                 "editor_cancelled") echo "🚫 취소되었습니다." ;;
@@ -440,9 +436,9 @@ if [ "$STAGE_ALL" = true ]; then
     git add .
 fi
 
-# Gemini CLI 설치 확인
-if ! command -v gemini >/dev/null 2>&1; then
-    echo -e "${YELLOW}$(msg "gemini_not_installed")${NC}"
+# agy CLI 설치 확인
+if ! command -v agy >/dev/null 2>&1; then
+    echo -e "${YELLOW}$(msg "agy_not_installed")${NC}"
     echo ""
     
     # 사용자에게 선택 물어보기
@@ -579,31 +575,31 @@ Keep descriptions under 80 characters.
 Generate ONLY the commit message, no quotes:"
 fi
 
-# Gemini CLI 호출 시도
+# agy CLI 호출 시도
 AI_MESSAGE=""
 
 if [ -z "$AI_MESSAGE" ]; then
-    # 백그라운드에서 Gemini CLI 실행
-    TEMP_OUTPUT="/tmp/gemini_output_$$"
-    (gemini --model gemini-2.5-flash --prompt "$DETAILED_MULTILINE_PROMPT" 2>&1 > "$TEMP_OUTPUT"; echo $? > "/tmp/gemini_exit_$$") &
-    GEMINI_PID=$!
+    # 백그라운드에서 agy CLI 실행
+    TEMP_OUTPUT="/tmp/agy_output_$$"
+    (agy --print "$DETAILED_MULTILINE_PROMPT" 2>&1 > "$TEMP_OUTPUT"; echo $? > "/tmp/agy_exit_$$") &
+    AGY_PID=$!
     
     # 브라일 애니메이션 시작
-    show_braille $GEMINI_PID
+    show_braille $AGY_PID
     
     # 프로세스 완료 대기
-    wait $GEMINI_PID
+    wait $AGY_PID
     
     # 결과 읽기
-    GEMINI_OUTPUT=$(cat "$TEMP_OUTPUT")
-    GEMINI_EXIT_CODE=$(cat "/tmp/gemini_exit_$$")
+    AGY_OUTPUT=$(cat "$TEMP_OUTPUT")
+    AGY_EXIT_CODE=$(cat "/tmp/agy_exit_$$")
     
     # 임시 파일 정리
-    rm -f "$TEMP_OUTPUT" "/tmp/gemini_exit_$$"
+    rm -f "$TEMP_OUTPUT" "/tmp/agy_exit_$$"
     
-    # Gemini CLI 실행 실패 시 처리
-    if [ $GEMINI_EXIT_CODE -ne 0 ]; then
-        echo -e "${YELLOW}$(msg "gemini_not_installed")${NC}"
+    # agy CLI 실행 실패 시 처리
+    if [ $AGY_EXIT_CODE -ne 0 ]; then
+        echo -e "${YELLOW}$(msg "agy_not_installed")${NC}"
         echo ""
         
         # 사용자에게 선택 물어보기
@@ -627,8 +623,8 @@ if [ -z "$AI_MESSAGE" ]; then
             esac
         done
     else
-        # "Loaded cached credentials." 제거하고 의미있는 출력 추출
-        AI_MESSAGE=$(echo "$GEMINI_OUTPUT" | grep -v "Loaded cached credentials" | grep -v "^$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # 불필요한 출력 제거하고 의미있는 출력 추출
+        AI_MESSAGE=$(echo "$AGY_OUTPUT" | grep -v "Loaded cached credentials" | grep -v "^$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
         # 길이 체크 (최소 30자 이상이어야 함)
         MSG_LENGTH=${#AI_MESSAGE}
@@ -643,8 +639,8 @@ if [ -z "$AI_MESSAGE" ]; then
             fi
             
             # 단순 접근법도 애니메이션과 함께
-            TEMP_OUTPUT2="/tmp/gemini_simple_$$"
-            (gemini --model gemini-2.5-flash --prompt "$SIMPLE_PROMPT" 2>&1 > "$TEMP_OUTPUT2"; echo $? > "/tmp/gemini_simple_exit_$$") &
+            TEMP_OUTPUT2="/tmp/agy_simple_$$"
+            (agy --print "$SIMPLE_PROMPT" 2>&1 > "$TEMP_OUTPUT2"; echo $? > "/tmp/agy_simple_exit_$$") &
             SIMPLE_PID=$!
             
             # 브라일 애니메이션으로 재시도
@@ -652,8 +648,8 @@ if [ -z "$AI_MESSAGE" ]; then
             wait $SIMPLE_PID
             
             SIMPLE_OUTPUT=$(cat "$TEMP_OUTPUT2")
-            SIMPLE_EXIT_CODE=$(cat "/tmp/gemini_simple_exit_$$")
-            rm -f "$TEMP_OUTPUT2" "/tmp/gemini_simple_exit_$$"
+            SIMPLE_EXIT_CODE=$(cat "/tmp/agy_simple_exit_$$")
+            rm -f "$TEMP_OUTPUT2" "/tmp/agy_simple_exit_$$"
             
             if [ $SIMPLE_EXIT_CODE -eq 0 ]; then
                 AI_MESSAGE=$(echo "$SIMPLE_OUTPUT" | grep -v "Loaded cached credentials" | grep -v "^$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
