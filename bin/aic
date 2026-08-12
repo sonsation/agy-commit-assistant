@@ -2,16 +2,132 @@
 
 # Gemini API를 사용한 AI 커밋 메시지 생성기 (최종 버전)
 
+# 색상 정의
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# 대화형 선택 메뉴 함수 (방향키 및 번호 입력 지원)
+# 사용법: interactive_menu "프롬프트 텍스트" 선택지배열이름 [기본값인덱스]
+interactive_menu() {
+    local prompt="$1"
+    local array_name=$2[@]
+    local options=("${!array_name}")
+    local default_idx=${3:-0}
+    
+    local selected=$default_idx
+    local input_buffer=""
+    
+    tput civis # 커서 숨기기
+    
+    render() {
+        echo -e "${CYAN}$prompt${NC}"
+        if [ -n "$input_buffer" ]; then
+            echo -e "  ${YELLOW}입력중: $input_buffer${NC}"
+        fi
+        
+        for i in "${!options[@]}"; do
+            local num=$((i+1))
+            if [ "$i" -eq "$selected" ]; then
+                echo -e "  ${GREEN}▶ $num. ${options[$i]}${NC}"
+            else
+                echo -e "    $num. ${options[$i]}"
+            fi
+        done
+    }
+    
+    clear_and_render() {
+        local lines=${#options[@]}
+        ((lines += 1))
+        if [ -n "$input_buffer" ] || [ "$1" = "had_buffer" ]; then
+            ((lines += 1))
+        fi
+        
+        tput cuu $lines
+        tput ed
+        
+        render
+    }
+    
+    render
+    local had_buffer="false"
+    
+    while true; do
+        read -rsn1 key
+        
+        if [[ $key == $'\x1b' ]]; then
+            read -rsn2 -t 0.1 ext
+            if [[ $ext == "[A" ]]; then # Up
+                ((selected--))
+                if [ $selected -lt 0 ]; then selected=$((${#options[@]} - 1)); fi
+                input_buffer=""
+            elif [[ $ext == "[B" ]]; then # Down
+                ((selected++))
+                if [ $selected -ge ${#options[@]} ]; then selected=0; fi
+                input_buffer=""
+            fi
+        elif [[ $key == "" ]]; then # Enter
+            break
+        elif [[ $key == $'\x7f' || $key == $'\b' ]]; then # Backspace
+            input_buffer="${input_buffer%?}"
+        else
+            input_buffer="${input_buffer}${key}"
+            for i in "${!options[@]}"; do
+                if [ "$((i+1))" = "$input_buffer" ]; then
+                    selected=$i
+                fi
+            done
+        fi
+        
+        clear_and_render "$had_buffer"
+        if [ -n "$input_buffer" ]; then
+            had_buffer="true"
+        else
+            had_buffer="false"
+        fi
+    done
+    
+    tput cnorm
+    MENU_RESULT=$selected
+    
+    local lines=${#options[@]}
+    ((lines += 1))
+    [ "$had_buffer" = "true" ] && ((lines += 1))
+    tput cuu $lines
+    tput ed
+    
+    # 선택된 결과만 프롬프트와 함께 출력
+    echo -e "${CYAN}$prompt${NC} ${GREEN}${options[$MENU_RESULT]}${NC}"
+}
+
 # 설정 파일 위치
 CONFIG_FILE="$HOME/.gemini-commit-config.json"
 
 # 설정 파일 읽기 함수
 load_config() {
+    # 글로벌 설정 읽기
     if [ -f "$CONFIG_FILE" ]; then
         LANGUAGE=$(cat "$CONFIG_FILE" | grep -o '"language":"[^"]*"' | cut -d'"' -f4)
+        MODEL=$(cat "$CONFIG_FILE" | grep -o '"model":"[^"]*"' | cut -d'"' -f4)
         [ -z "$LANGUAGE" ] && LANGUAGE="ko"
     else
         LANGUAGE=""
+        MODEL=""
+    fi
+
+    # 프로젝트(로컬) 설정 읽기
+    LOCAL_CONFIG_FILE="./.aicrc"
+    if [ -f "$LOCAL_CONFIG_FILE" ]; then
+        LOCAL_LANG=$(cat "$LOCAL_CONFIG_FILE" | grep -o '"language":"[^"]*"' | cut -d'"' -f4)
+        LOCAL_MODEL=$(cat "$LOCAL_CONFIG_FILE" | grep -o '"model":"[^"]*"' | cut -d'"' -f4)
+        
+        [ -n "$LOCAL_LANG" ] && LANGUAGE="$LOCAL_LANG"
+        [ -n "$LOCAL_MODEL" ] && MODEL="$LOCAL_MODEL"
     fi
 }
 
@@ -19,7 +135,11 @@ load_config() {
 save_config() {
     local lang=$1
     mkdir -p "$(dirname "$CONFIG_FILE")"
-    echo '{"language":"'$lang'"}' > "$CONFIG_FILE"
+    if [ -n "$MODEL" ]; then
+        echo '{"language":"'$lang'","model":"'$MODEL'"}' > "$CONFIG_FILE"
+    else
+        echo '{"language":"'$lang'"}' > "$CONFIG_FILE"
+    fi
 }
 
 # 언어별 메시지 함수
@@ -63,7 +183,11 @@ msg() {
                 "staging_all") echo "📦 Staging all files..." ;;
                 "agy_not_installed") echo "⚠️  agy CLI is not installed. Please install Antigravity CLI first." ;;
                 "fallback_editor") echo "🔧 Using standard editor for commit message..." ;;
-                "editor_prompt") echo "Do you want to write a commit message in the text editor? (y/n): " ;;
+                "editor_prompt") echo "Write commit message in text editor?" ;;
+                "action_yes") echo "Yes" ;;
+                "action_no") echo "No" ;;
+                "action_edit") echo "Edit message" ;;
+                "action_custom") echo "Write custom message" ;;
                 "editor_cancelled") echo "🚫 Cancelled." ;;
                 "editor_invalid") echo "Please enter y or n." ;;
                 "no_staged_files") echo "⚠️  No staged files found." ;;
@@ -74,14 +198,17 @@ msg() {
                 "unstaged_files") echo "📊 Unstaged files:" ;;
                 "no_changes") echo "📊 No changes found." ;;
                 "analyzing_staged") echo "📝 Analyzing staged file changes..." ;;
-                "ai_generating") echo "🤖 AI is generating commit message..." ;;
+                "ai_generating") 
+                    local m="${2:-Default Model}"
+                    echo "🤖 AI ($m) is generating commit message..." 
+                    ;;
                 "ai_generated") echo "🎯 AI Generated Commit Message:" ;;
                 "ai_no_response") echo "⚠️  No AI response received." ;;
                 "change_summary") echo "📊 Change Summary:" ;;
                 "new_files") echo "  + $1 new files" ;;
                 "modified_files") echo "  ~ $1 modified files" ;;
                 "deleted_files") echo "  - $1 deleted files" ;;
-                "commit_prompt") echo "Use this commit message? (y)es/(n)o/(e)dit/(c)ustom:" ;;
+                "commit_prompt") echo "Use this commit message?" ;;
                 "commit_success") echo "✅ Commit created successfully!" ;;
                 "commit_message") echo "📝 Commit message:" ;;
                 "commit_info") echo "📋 Commit info:" ;;
@@ -97,14 +224,35 @@ msg() {
                 "configure_title") echo "🌐 Language Configuration" ;;
                 "configure_current") echo "📍 Current language: $1" ;;
                 "configure_select") echo "🔤 Select language / 언어를 선택하세요:" ;;
-                "configure_korean") echo "  1. 한국어 (Korean)" ;;
-                "configure_english") echo "  2. English" ;;
-                "configure_prompt") echo "Enter choice (1-2): " ;;
+                "configure_korean") echo "한국어 (Korean)" ;;
+                "configure_english") echo "English" ;;
+                "configure_prompt") echo "Enter choice: " ;;
                 "configure_success") echo "✅ Language set to: $1" ;;
-                "configure_invalid") echo "❌ Invalid choice. Please select 1 or 2." ;;
+                "configure_invalid") echo "❌ Invalid choice." ;;
                 "first_run_title") echo "🎉 Welcome to AI Commit Assistant!" ;;
                 "first_run_subtitle") echo "First-time setup" ;;
                 "first_run_desc") echo "Please select your preferred language for UI and commit messages:" ;;
+                "config_local_title") echo "Local (Project) Settings (.aicrc)" ;;
+                "config_global_title") echo "Global Settings (~/.gemini-commit-config.json)" ;;
+                "config_current_settings") echo "📍 Current Settings:" ;;
+                "config_current_lang") echo "  - Language: ${1:-Default (ko)}" ;;
+                "config_current_model") echo "  - Model: ${1:-Not set}" ;;
+                "config_lang_title") echo "Language Settings" ;;
+                "config_skip") echo "Skip" ;;
+                "config_prompt_lang") echo "Enter choice: " ;;
+                "config_model_title") echo "AI Model Settings" ;;
+                "config_model_fetching") echo "  Fetching available models..." ;;
+                "config_model_fetch_failed") echo "  ⚠️ Failed to fetch model list." ;;
+                "config_model_hint_manual") echo "  (Press Enter to keep current, type 'clear' to unset)" ;;
+                "config_model_prompt_manual") echo "Enter model name manually: " ;;
+                "config_model_skip") echo "Skip" ;;
+                "config_model_clear") echo "Clear setting" ;;
+                "config_model_prompt_list") echo "Enter choice: " ;;
+                "config_saved") echo "✅ Settings saved! ($1)" ;;
+                "config_which") echo "Which settings do you want to change?" ;;
+                "config_choice_global") echo "Global settings (apply to all projects)" ;;
+                "config_choice_local") echo "Local settings (apply to this project only)" ;;
+                "config_prompt_which") echo "Enter choice: " ;;
                 *) echo "$key" ;;
             esac
             ;;
@@ -145,7 +293,11 @@ msg() {
                 "staging_all") echo "📦 모든 파일을 staging합니다..." ;;
                 "agy_not_installed") echo "⚠️  agy CLI가 설치되어 있지 않습니다. 먼저 Antigravity CLI를 설치해주세요." ;;
                 "fallback_editor") echo "🔧 일반 에디터로 커밋 메시지를 작성합니다..." ;;
-                "editor_prompt") echo "텍스트 에디터에서 커밋 메시지를 남기시겠습니까? (y/n): " ;;
+                "editor_prompt") echo "텍스트 에디터에서 커밋 메시지를 남기시겠습니까?" ;;
+                "action_yes") echo "네 (Yes)" ;;
+                "action_no") echo "아니오 (No)" ;;
+                "action_edit") echo "메시지 수정 (Edit)" ;;
+                "action_custom") echo "직접 입력 (Custom)" ;;
                 "editor_cancelled") echo "🚫 취소되었습니다." ;;
                 "editor_invalid") echo "y 또는 n을 입력해주세요." ;;
                 "no_staged_files") echo "⚠️  staging된 파일이 없습니다." ;;
@@ -156,14 +308,17 @@ msg() {
                 "unstaged_files") echo "📊 unstaged 파일 목록:" ;;
                 "no_changes") echo "📊 변경된 파일이 없습니다." ;;
                 "analyzing_staged") echo "📝 Staged 파일의 변경사항을 분석합니다..." ;;
-                "ai_generating") echo "🤖 AI가 커밋 메시지를 생성 중입니다..." ;;
+                "ai_generating") 
+                    local m="${2:-기본 모델}"
+                    echo "🤖 AI ($m)가 커밋 메시지를 생성 중입니다..." 
+                    ;;
                 "ai_generated") echo "🎯 AI 생성 커밋 메시지:" ;;
                 "ai_no_response") echo "⚠️  AI 응답을 받지 못했습니다." ;;
                 "change_summary") echo "📊 변경사항 요약:" ;;
                 "new_files") echo "  + $1 새 파일" ;;
                 "modified_files") echo "  ~ $1 수정된 파일" ;;
                 "deleted_files") echo "  - $1 삭제된 파일" ;;
-                "commit_prompt") echo "이 커밋 메시지를 사용하시겠습니까? (y)es/(n)o/(e)dit/(c)ustom:" ;;
+                "commit_prompt") echo "이 커밋 메시지를 사용하시겠습니까?" ;;
                 "commit_success") echo "✅ 커밋이 성공적으로 생성되었습니다!" ;;
                 "commit_message") echo "📝 커밋 메시지:" ;;
                 "commit_info") echo "📋 커밋 정보:" ;;
@@ -179,63 +334,130 @@ msg() {
                 "configure_title") echo "🌐 언어 설정" ;;
                 "configure_current") echo "📍 현재 언어: $1" ;;
                 "configure_select") echo "🔤 언어를 선택하세요 / Select language:" ;;
-                "configure_korean") echo "  1. 한국어 (Korean)" ;;
-                "configure_english") echo "  2. English" ;;
-                "configure_prompt") echo "선택하세요 (1-2): " ;;
+                "configure_korean") echo "한국어 (Korean)" ;;
+                "configure_english") echo "English" ;;
+                "configure_prompt") echo "선택하세요: " ;;
                 "configure_success") echo "✅ 언어가 설정되었습니다: $1" ;;
-                "configure_invalid") echo "❌ 잘못된 선택입니다. 1 또는 2를 선택해주세요." ;;
+                "configure_invalid") echo "❌ 잘못된 선택입니다." ;;
                 "first_run_title") echo "🎉 AI Commit Assistant에 오신 것을 환영합니다!" ;;
                 "first_run_subtitle") echo "최초 설정" ;;
                 "first_run_desc") echo "UI와 커밋 메시지에 사용할 언어를 선택해주세요:" ;;
+                "config_local_title") echo "로컬(프로젝트) 설정 (.aicrc)" ;;
+                "config_global_title") echo "글로벌 설정 (~/.gemini-commit-config.json)" ;;
+                "config_current_settings") echo "📍 현재 설정:" ;;
+                "config_current_lang") echo "  - 언어 (Language): ${1:-기본값(ko)}" ;;
+                "config_current_model") echo "  - 모델 (Model): ${1:-지정 안 됨}" ;;
+                "config_lang_title") echo "언어 설정 (Language)" ;;
+                "config_skip") echo "변경 안 함 (Skip)" ;;
+                "config_prompt_lang") echo "선택: " ;;
+                "config_model_title") echo "AI 모델 설정 (Model)" ;;
+                "config_model_fetching") echo "  사용 가능한 모델을 불러오는 중..." ;;
+                "config_model_fetch_failed") echo "  ⚠️ 모델 목록을 불러오지 못했습니다." ;;
+                "config_model_hint_manual") echo "  (엔터를 치면 기존 설정을 유지하고, 'clear'를 입력하면 설정을 지웁니다)" ;;
+                "config_model_prompt_manual") echo "모델 이름 직접 입력: " ;;
+                "config_model_skip") echo "변경 안 함 (Skip)" ;;
+                "config_model_clear") echo "설정 지우기 (Clear)" ;;
+                "config_model_prompt_list") echo "선택: " ;;
+                "config_saved") echo "✅ 설정이 저장되었습니다! ($1)" ;;
+                "config_which") echo "어느 설정을 변경하시겠습니까?" ;;
+                "config_choice_global") echo "글로벌 설정 (모든 프로젝트에 공통 적용)" ;;
+                "config_choice_local") echo "로컬 설정 (현재 프로젝트에만 적용)" ;;
+                "config_prompt_which") echo "선택: " ;;
                 *) echo "$key" ;;
             esac
             ;;
     esac
 }
 
-# 언어 설정 함수
-configure_language() {
-    echo -e "${BLUE}============================================================${NC}"
-    echo -e "${BOLD}$(msg "configure_title")${NC}"
-    echo -e "${BLUE}============================================================${NC}"
+# 설정 변경 함수
+configure_settings() {
+    local scope=$1
+    if [ "$scope" = "local" ]; then
+        echo -e "${BLUE}============================================================${NC}"
+        echo -e "${BOLD}$(msg "config_local_title")${NC}"
+        echo -e "${BLUE}============================================================${NC}"
+        TARGET_FILE="$LOCAL_CONFIG_FILE"
+        CURRENT_LANG="$LOCAL_LANG"
+        CURRENT_MODEL="$LOCAL_MODEL"
+    else
+        echo -e "${BLUE}============================================================${NC}"
+        echo -e "${BOLD}$(msg "config_global_title")${NC}"
+        echo -e "${BLUE}============================================================${NC}"
+        TARGET_FILE="$CONFIG_FILE"
+        CURRENT_LANG="$LANGUAGE"
+        CURRENT_MODEL="$MODEL"
+    fi
     echo ""
     
-    if [ -n "$LANGUAGE" ]; then
-        local current_lang_name
-        if [ "$LANGUAGE" = "en" ]; then
-            current_lang_name="English"
-        else
-            current_lang_name="한국어"
+    echo -e "${CYAN}$(msg "config_current_settings")${NC}"
+    echo -e "$(msg "config_current_lang" "$CURRENT_LANG")"
+    echo -e "$(msg "config_current_model" "$CURRENT_MODEL")"
+    echo ""
+    
+    echo -e "${CYAN}$(msg "config_lang_title")${NC}"
+    local lang_opts=("$(msg "configure_korean")" "$(msg "configure_english")" "$(msg "config_skip")")
+    interactive_menu "$(msg "config_prompt_lang")" lang_opts 0
+    case $MENU_RESULT in
+        0) TEMP_LANG="ko" ;;
+        1) TEMP_LANG="en" ;;
+        2) TEMP_LANG="${CURRENT_LANG:-ko}" ;;
+    esac
+    
+    echo ""
+    echo -e "${CYAN}$(msg "config_model_title")${NC}"
+    echo -e "$(msg "config_model_fetching")"
+    
+    models=()
+    model_displays=()
+    while IFS=$'\t' read -r id name; do
+        if [ -n "$id" ] && [[ "$id" != *"Fetching"* ]]; then
+            models+=("$id")
+            model_displays+=("$name ($id)")
         fi
-        echo -e "${CYAN}$(msg "configure_current" "$current_lang_name")${NC}"
-        echo ""
+    done < <(agy models 2>/dev/null)
+    
+    if [ ${#models[@]} -eq 0 ]; then
+        echo -e "${YELLOW}$(msg "config_model_fetch_failed")${NC}"
+        echo -e "$(msg "config_model_hint_manual")"
+        read -p "$(msg "config_model_prompt_manual")" model_input
+        
+        if [ "$model_input" = "clear" ]; then
+            TEMP_MODEL=""
+        elif [ -n "$model_input" ]; then
+            TEMP_MODEL="$model_input"
+        else
+            TEMP_MODEL="$CURRENT_MODEL"
+        fi
+    else
+        local model_opts=("$(msg "config_model_skip")" "$(msg "config_model_clear")")
+        for i in "${!models[@]}"; do
+            model_opts+=("${model_displays[$i]}")
+        done
+        
+        interactive_menu "$(msg "config_model_prompt_list")" model_opts 0
+        
+        if [ "$MENU_RESULT" = "0" ]; then
+            TEMP_MODEL="$CURRENT_MODEL"
+        elif [ "$MENU_RESULT" = "1" ]; then
+            TEMP_MODEL=""
+        else
+            TEMP_MODEL="${models[$((MENU_RESULT-2))]}"
+        fi
     fi
     
-    echo -e "${CYAN}$(msg "configure_select")${NC}"
-    echo -e "$(msg "configure_korean")"
-    echo -e "$(msg "configure_english")"
-    echo ""
+    # 설정 저장
+    mkdir -p "$(dirname "$TARGET_FILE")"
+    if [ -n "$TEMP_MODEL" ]; then
+        echo '{"language":"'"$TEMP_LANG"'","model":"'"$TEMP_MODEL"'"}' > "$TARGET_FILE"
+    else
+        echo '{"language":"'"$TEMP_LANG"'"}' > "$TARGET_FILE"
+    fi
     
-    while true; do
-        read -p "$(msg "configure_prompt")" choice
-        case $choice in
-            1)
-                LANGUAGE="ko"
-                save_config "ko"
-                echo -e "${GREEN}$(msg "configure_success" "한국어")${NC}"
-                break
-                ;;
-            2)
-                LANGUAGE="en"
-                save_config "en"
-                echo -e "${GREEN}$(msg "configure_success" "English")${NC}"
-                break
-                ;;
-            *)
-                echo -e "${RED}$(msg "configure_invalid")${NC}"
-                ;;
-        esac
-    done
+    echo ""
+    echo -e "${GREEN}$(msg "config_saved" "$TARGET_FILE")${NC}"
+    
+    # 설정 다시 로드
+    load_config
 }
 
 # 최초 실행 체크 및 언어 설정
@@ -249,34 +471,20 @@ first_time_setup() {
     echo -e "${CYAN}Please select your preferred language for UI and commit messages:${NC}"
     echo ""
     
-    echo -e "  1. 한국어 (Korean)"
-    echo -e "  2. English"
-    echo ""
-    
-    while true; do
-        read -p "Select (1-2): " choice
-        case $choice in
-            1)
-                LANGUAGE="ko"
-                save_config "ko"
-                echo ""
-                echo -e "${GREEN}✅ 언어가 설정되었습니다: 한국어${NC}"
-                echo ""
-                break
-                ;;
-            2)
-                LANGUAGE="en"
-                save_config "en"
-                echo ""
-                echo -e "${GREEN}✅ Language set to: English${NC}"
-                echo ""
-                break
-                ;;
-            *)
-                echo -e "${RED}❌ Invalid choice. Please select 1 or 2.${NC}"
-                ;;
-        esac
-    done
+    local setup_opts=("한국어 (Korean)" "English")
+    interactive_menu "Please select your preferred language for UI and commit messages:" setup_opts 0
+    case $MENU_RESULT in
+        0)
+            LANGUAGE="ko"
+            save_config "ko"
+            echo -e "${GREEN}✅ 언어가 설정되었습니다: 한국어${NC}"
+            ;;
+        1)
+            LANGUAGE="en"
+            save_config "en"
+            echo -e "${GREEN}✅ Language set to: English${NC}"
+            ;;
+    esac
 }
 
 # 설정 로드
@@ -337,13 +545,24 @@ while [[ $# -gt 0 ]]; do
             fi
             exit 0
             ;;
+        --config-global)
+            if [ -z "$LANGUAGE" ]; then first_time_setup; fi
+            configure_settings "global"
+            exit 0
+            ;;
+        --config-local)
+            if [ -z "$LANGUAGE" ]; then first_time_setup; fi
+            configure_settings "local"
+            exit 0
+            ;;
         --configure)
-            # 설정이 없으면 먼저 언어 설정
-            if [ -z "$LANGUAGE" ]; then
-                first_time_setup
-            else
-                configure_language
-            fi
+            if [ -z "$LANGUAGE" ]; then first_time_setup; fi
+            local conf_opts=("$(msg "config_choice_global")" "$(msg "config_choice_local")")
+            interactive_menu "$(msg "config_which")" conf_opts 0
+            case $MENU_RESULT in
+                0) configure_settings "global" ;;
+                1) configure_settings "local" ;;
+            esac
             exit 0
             ;;
         --all|-a)
@@ -367,6 +586,8 @@ while [[ $# -gt 0 ]]; do
             echo -e "${CYAN}$(msg "help_options")${NC}"
             echo -e "$(msg "help_all_desc")"
             echo -e "$(msg "help_configure_desc")"
+            echo "  --config-global         # 글로벌(전역) 설정 변경"
+            echo "  --config-local          # 로컬(프로젝트) 설정 변경"
             echo -e "$(msg "help_setup_desc")"
             echo -e "$(msg "help_unsetup_desc")"
             echo -e "$(msg "help_help_desc")"
@@ -392,16 +613,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# 색상 정의 (first_time_setup보다 먼저 정의)
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
 # 최초 실행 체크
 if [ -z "$LANGUAGE" ]; then
     first_time_setup
@@ -414,12 +625,14 @@ show_braille() {
     local braille="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     local i=0
     
+    local generating_msg=$(msg "ai_generating" "$MODEL")
+    
     while kill -0 "$pid" 2>/dev/null; do
-        printf "\r${CYAN}$(msg "ai_generating") ${braille:$i:1}${NC}"
+        printf "\r${CYAN}${generating_msg} ${braille:$i:1}${NC}"
         i=$(((i+1) % ${#braille}))
         sleep $delay
     done
-    printf "\r${CYAN}$(msg "ai_generating") ✓${NC}\n"
+    printf "\r${CYAN}${generating_msg} ✓${NC}\n"
 }
 
 echo -e "${MAGENTA}$(msg "welcome")${NC}"
@@ -441,26 +654,17 @@ if ! command -v agy >/dev/null 2>&1; then
     echo -e "${YELLOW}$(msg "agy_not_installed")${NC}"
     echo ""
     
-    # 사용자에게 선택 물어보기
-    while true; do
-        read -p "$(msg "editor_prompt")" choice
-        case $choice in
-            [Yy]|[Yy]es|[예]|[네])
-                echo -e "${CYAN}$(msg "fallback_editor")${NC}"
-                echo ""
-                # 일반 git commit처럼 동작
-                git commit
-                exit $?
-                ;;
-            [Nn]|[Nn]o|[아니오]|[안됨])
-                echo -e "${CYAN}$(msg "editor_cancelled")${NC}"
-                exit 0
-                ;;
-            *)
-                echo -e "${RED}$(msg "editor_invalid")${NC}"
-                ;;
-        esac
-    done
+    local editor_opts=("$(msg "action_yes")" "$(msg "action_no")")
+    interactive_menu "$(msg "editor_prompt")" editor_opts 0
+    if [ "$MENU_RESULT" = "0" ]; then
+        echo -e "${CYAN}$(msg "fallback_editor")${NC}"
+        echo ""
+        git commit
+        exit $?
+    else
+        echo -e "${CYAN}$(msg "editor_cancelled")${NC}"
+        exit 0
+    fi
 fi
 
 # 변경사항 확인
@@ -580,9 +784,15 @@ fi
 AI_MESSAGE=""
 
 if [ -z "$AI_MESSAGE" ]; then
+    # 모델 옵션 구성
+    AGY_ARGS=("--print" "$DETAILED_MULTILINE_PROMPT")
+    if [ -n "$MODEL" ]; then
+        AGY_ARGS=("--model" "$MODEL" "${AGY_ARGS[@]}")
+    fi
+    
     # 백그라운드에서 agy CLI 실행
     TEMP_OUTPUT="/tmp/agy_output_$$"
-    (agy --print "$DETAILED_MULTILINE_PROMPT" 2>&1 > "$TEMP_OUTPUT"; echo $? > "/tmp/agy_exit_$$") &
+    (agy "${AGY_ARGS[@]}" 2>&1 > "$TEMP_OUTPUT"; echo $? > "/tmp/agy_exit_$$") &
     AGY_PID=$!
     
     # 브라일 애니메이션 시작
@@ -603,26 +813,17 @@ if [ -z "$AI_MESSAGE" ]; then
         echo -e "${YELLOW}$(msg "agy_not_installed")${NC}"
         echo ""
         
-        # 사용자에게 선택 물어보기
-        while true; do
-            read -p "$(msg "editor_prompt")" choice
-            case $choice in
-                [Yy]|[Yy]es|[예]|[네])
-                    echo -e "${CYAN}$(msg "fallback_editor")${NC}"
-                    echo ""
-                    # 일반 git commit처럼 동작
-                    git commit
-                    exit $?
-                    ;;
-                [Nn]|[Nn]o|[아니오]|[안됨])
-                    echo -e "${CYAN}$(msg "editor_cancelled")${NC}"
-                    exit 0
-                    ;;
-                *)
-                    echo -e "${RED}$(msg "editor_invalid")${NC}"
-                    ;;
-            esac
-        done
+        local editor_opts=("$(msg "action_yes")" "$(msg "action_no")")
+        interactive_menu "$(msg "editor_prompt")" editor_opts 0
+        if [ "$MENU_RESULT" = "0" ]; then
+            echo -e "${CYAN}$(msg "fallback_editor")${NC}"
+            echo ""
+            git commit
+            exit $?
+        else
+            echo -e "${CYAN}$(msg "editor_cancelled")${NC}"
+            exit 0
+        fi
     else
         # 불필요한 출력 제거하고 의미있는 출력 추출
         AI_MESSAGE=$(echo "$AGY_OUTPUT" | grep -v "Loaded cached credentials" | grep -v "^$" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -641,7 +842,13 @@ if [ -z "$AI_MESSAGE" ]; then
             
             # 단순 접근법도 애니메이션과 함께
             TEMP_OUTPUT2="/tmp/agy_simple_$$"
-            (agy --print "$SIMPLE_PROMPT" 2>&1 > "$TEMP_OUTPUT2"; echo $? > "/tmp/agy_simple_exit_$$") &
+            
+            AGY_SIMPLE_ARGS=("--print" "$SIMPLE_PROMPT")
+            if [ -n "$MODEL" ]; then
+                AGY_SIMPLE_ARGS=("--model" "$MODEL" "${AGY_SIMPLE_ARGS[@]}")
+            fi
+            
+            (agy "${AGY_SIMPLE_ARGS[@]}" 2>&1 > "$TEMP_OUTPUT2"; echo $? > "/tmp/agy_simple_exit_$$") &
             SIMPLE_PID=$!
             
             # 브라일 애니메이션으로 재시도
@@ -741,55 +948,50 @@ DELETED_FILES=$(echo "$STATUS" | grep "^.D\|^D" | wc -l)
 [ "$DELETED_FILES" -gt 0 ] && echo -e "  ${RED}$(msg "deleted_files" "$DELETED_FILES")${NC}"
 echo ""
 
-while true; do
-    read -p "$(echo -e "${BOLD}$(msg "commit_prompt")${NC} ")" choice
-    case $choice in
-        [Yy]* )
-            if git commit -m "$AI_MESSAGE"; then
-                echo -e "${GREEN}$(msg "commit_success")${NC}"
+commit_opts=("$(msg "action_yes")" "$(msg "action_no")" "$(msg "action_edit")" "$(msg "action_custom")")
+interactive_menu "$(msg "commit_prompt")" commit_opts 0
+
+case $MENU_RESULT in
+    0)
+        if git commit -m "$AI_MESSAGE"; then
+            echo -e "${GREEN}$(msg "commit_success")${NC}"
+        else
+            echo -e "${RED}$(msg "commit_failed")${NC}"
+        fi
+        ;;
+    1)
+        echo -e "${YELLOW}$(msg "commit_cancelled")${NC}"
+        exit 0
+        ;;
+    2)
+        TEMP_FILE="/tmp/edit_commit_$$.txt"
+        echo "$AI_MESSAGE" > "$TEMP_FILE"
+        echo -e "${CYAN}$(msg "editor_starting")${NC}"
+        ${EDITOR:-vi} "$TEMP_FILE"
+        EDITED_MESSAGE=$(cat "$TEMP_FILE" | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        rm -f "$TEMP_FILE"
+        
+        if [ -n "$EDITED_MESSAGE" ]; then
+            if git commit -m "$EDITED_MESSAGE"; then
+                echo -e "${GREEN}$(msg "edit_success")${NC}"
             else
                 echo -e "${RED}$(msg "commit_failed")${NC}"
             fi
-            break
-            ;;
-        [Nn]* )
-            echo -e "${YELLOW}$(msg "commit_cancelled")${NC}"
-            exit 0
-            ;;
-        [Ee]* )
-            TEMP_FILE="/tmp/edit_commit_$$.txt"
-            echo "$AI_MESSAGE" > "$TEMP_FILE"
-            echo -e "${CYAN}$(msg "editor_starting")${NC}"
-            ${EDITOR:-vi} "$TEMP_FILE"
-            EDITED_MESSAGE=$(cat "$TEMP_FILE" | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            rm -f "$TEMP_FILE"
-            
-            if [ -n "$EDITED_MESSAGE" ]; then
-                if git commit -m "$EDITED_MESSAGE"; then
-                    echo -e "${GREEN}$(msg "edit_success")${NC}"
-                else
-                    echo -e "${RED}$(msg "commit_failed")${NC}"
-                fi
+        else
+            echo -e "${YELLOW}$(msg "edit_cancelled")${NC}"
+        fi
+        ;;
+    3)
+        read -p "$(echo -e "${CYAN}$(msg "custom_message")${NC} ")" CUSTOM_MESSAGE
+        if [ -n "$CUSTOM_MESSAGE" ]; then
+            if git commit -m "$CUSTOM_MESSAGE"; then
+                echo -e "${GREEN}$(msg "custom_success")${NC}"
             else
-                echo -e "${YELLOW}$(msg "edit_cancelled")${NC}"
+                echo -e "${RED}$(msg "commit_failed")${NC}"
             fi
-            break
-            ;;
-        [Cc]* )
-            read -p "$(echo -e "${CYAN}$(msg "custom_message")${NC} ")" CUSTOM_MESSAGE
-            if [ -n "$CUSTOM_MESSAGE" ]; then
-                if git commit -m "$CUSTOM_MESSAGE"; then
-                    echo -e "${GREEN}$(msg "custom_success")${NC}"
-                else
-                    echo -e "${RED}$(msg "commit_failed")${NC}"
-                fi
-            else
-                echo -e "${YELLOW}$(msg "empty_message")${NC}"
-            fi
-            break
-            ;;
-        * )
-            echo -e "${RED}$(msg "invalid_choice")${NC}"
-            ;;
-    esac
-done
+        else
+            echo -e "${YELLOW}$(msg "empty_message")${NC}"
+            echo -e "${RED}$(msg "commit_failed")${NC}"
+        fi
+        ;;
+esac
