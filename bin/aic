@@ -22,7 +22,11 @@ interactive_menu() {
     
     local selected=$default_idx
     local input_buffer=""
-    
+
+    # bash 3.2(macOS 기본)는 소수점 타임아웃을 지원하지 않음
+    local esc_timeout="0.1"
+    if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then esc_timeout="1"; fi
+
     tput civis # 커서 숨기기
     
     render() {
@@ -61,7 +65,7 @@ interactive_menu() {
         read -rsn1 key
         
         if [[ $key == $'\x1b' ]]; then
-            read -rsn2 -t 0.1 ext
+            read -rsn2 -t "$esc_timeout" ext
             if [[ $ext == "[A" ]]; then # Up
                 ((selected--))
                 if [ $selected -lt 0 ]; then selected=$((${#options[@]} - 1)); fi
