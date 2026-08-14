@@ -35,10 +35,28 @@ git aic  # (git ai-commit)
 | 옵션           | 설명                                    |
 | -------------- | --------------------------------------- |
 | `--all`, `-a`  | 모든 파일을 staging 후 커밋 메시지 생성 |
-| `--configure`  | 언어 설정 변경 (한국어/English)         |
+| `--configure`  | 언어 / AI CLI / 모델 설정 변경          |
+| `--provider`   | 이번 실행에만 사용할 AI CLI 지정 (`agy` \| `claude`) |
 | `--setup`      | git alias 설정 (`git aic`)              |
 | `--unsetup`    | git alias 해제                          |
 | `--help`, `-h` | 도움말 표시                             |
+
+## 🤖 AI CLI 선택 (agy / claude)
+
+커밋 메시지를 생성할 AI CLI를 고를 수 있습니다.
+
+- **`agy`** — Antigravity CLI (Gemini) · 기본값
+- **`claude`** — Claude Code CLI
+
+```bash
+aic --configure         # 대화형으로 AI CLI + 모델 선택 (글로벌/로컬)
+aic --provider claude   # 이번 실행에만 claude 사용
+aic --claude            # 위와 동일한 축약형
+aic --agy               # 이번 실행에만 agy 사용
+```
+
+설정은 글로벌(`~/.gemini-commit-config.json`)과 프로젝트별(`.aicrc`) 양쪽에
+`"provider"` 값으로 저장되며, 프로젝트 설정이 글로벌 설정보다 우선합니다.
 
 ## 💰 비용상 이점
 

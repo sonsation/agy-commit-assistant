@@ -35,10 +35,29 @@ git aic  # git ai-commit
 | Option         | Description                                      |
 | -------------- | ------------------------------------------------ |
 | `--all`, `-a`  | Stage all files before generating commit message |
-| `--configure`  | Change language settings (Korean/English)        |
+| `--configure`  | Change language / AI CLI / model settings        |
+| `--provider`   | Use a specific AI CLI for this run (`agy` \| `claude`) |
 | `--setup`      | Set up git alias (`git aic`)                     |
 | `--unsetup`    | Remove git alias                                 |
 | `--help`, `-h` | Show help                                        |
+
+## 🤖 Choosing an AI CLI (agy / claude)
+
+You can pick which AI CLI generates your commit messages.
+
+- **`agy`** — Antigravity CLI (Gemini) · default
+- **`claude`** — Claude Code CLI
+
+```bash
+aic --configure         # interactively pick AI CLI + model (global/local)
+aic --provider claude   # use claude for this run only
+aic --claude            # shorthand for the above
+aic --agy               # use agy for this run only
+```
+
+The choice is stored as `"provider"` in both the global config
+(`~/.gemini-commit-config.json`) and the per-project `.aicrc`, with the
+project config taking precedence.
 
 ## 💰 Cost Benefits
 
